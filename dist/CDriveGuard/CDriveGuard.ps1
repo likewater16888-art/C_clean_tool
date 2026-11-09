@@ -13,6 +13,8 @@
 
     流程：① 扫描（只读） -> 勾掉不想清理的类别 -> ② 清理 -> 需要时「还原上次清理」
 
+    打开时会先显示一页「使用说明」，10 秒后才允许关闭（防止没读就乱点）。
+
 .PARAMETER SmokeTest
     Build the whole window, dump a control inventory and exit without showing it, so a
     broken UI cannot ship unnoticed.
@@ -23,6 +25,10 @@
 .PARAMETER OlderThanDays
     Initial value of the "only clean files older than N days" spinner (default 7).
 
+.PARAMETER IntroSeconds
+    Countdown before the intro page can be dismissed (default 10). Test hook only - not
+    documented for end users, and 0 disables the intro (automation).
+
 .EXAMPLE
     powershell -STA -NoProfile -ExecutionPolicy Bypass -File CDriveGuard.ps1
 #>
@@ -30,7 +36,8 @@
 param(
     [switch]$SmokeTest,
     [string]$SmokeOut = '',
-    [int]$OlderThanDays = 7
+    [int]$OlderThanDays = 7,
+    [Parameter(DontShow = $true)][int]$IntroSeconds = 10
 )
 
 $ErrorActionPreference = 'Stop'
@@ -39,7 +46,7 @@ Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()
 
-$script:AppVersion = '1.0.0'
+$script:AppVersion = '1.1.0'
 $script:AppRoot = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
 $script:Engine = Join-Path $script:AppRoot 'engine\Invoke-SafeClean.ps1'
 $script:DataRoot = Join-Path $env:LOCALAPPDATA 'CDriveGuard'
@@ -813,6 +820,165 @@ function Show-PlanDetails {
     $dlg.Dispose()
 }
 
+# ----------------------------------------------------------------------------- intro page
+# Shown once per launch, before the main window is usable: the "x" and the button are both
+# refused until the countdown reaches zero. The countdown is deliberately not skippable by
+# keyboard (Esc/Alt+F4 go through the same FormClosing guard).
+
+$script:IntroSeconds = [Math]::Max(0, $IntroSeconds)
+$script:IntroLeft = 0
+$script:IntroDlg = $null
+$script:IntroOk = $null
+$script:IntroHint = $null
+$script:IntroTimer = $null
+
+function Get-IntroGateText {
+    param([int]$SecondsLeft)
+    if ($SecondsLeft -gt 0) { return ('请先把上面的说明看完：还需等待 {0} 秒' -f $SecondsLeft) }
+    return '看完了。点「我知道了，开始使用」进入主界面。'
+}
+
+function Get-IntroBodyText {
+    $lines = @(
+        '这个工具只做两件事：'
+        '  1) 扫描：只读地算出 C 盘里可以安全搬走的“很久没动过的临时文件”；'
+        '  2) 清理：把它们搬到另一个文件夹（隔离区），不是删除。'
+        ''
+        '三步用法：'
+        '  ① 点【① 扫描（不改动文件）】，等 1~3 分钟（文件特别多时更久）；'
+        '  ② 看表格里的类别和大小，不想清理的，把「清理」列的勾去掉；'
+        '  ③ 点【② 开始清理 …】，确认后开始搬移；进度条走完就结束了。'
+        ''
+        '如果之后某个软件变得不正常：'
+        '  点【还原上次清理】，文件会全部搬回原来的位置（30 天内有效）。'
+        ''
+        '它绝不碰：'
+        '  系统目录、程序目录、文档、桌面、下载、OneDrive、.git、.ssh、聊天记录。'
+        ''
+        '它绝不做的：'
+        '  删除文件、联网上传、写注册表、装后台服务、建计划任务。'
+        ''
+        '请记住一件事：'
+        '  光是打开或关闭这个窗口，不会清理任何东西；'
+        '  只有点了【② 开始清理】并确认，才会动文件。'
+        ''
+        ('本页面打开 {0} 秒后才允许关闭（不会自动关闭），慢慢读完再关就行。' -f $script:IntroSeconds)
+    )
+    return ($lines -join "`r`n")
+}
+
+function New-IntroForm {
+    $dlg = New-Object System.Windows.Forms.Form
+    $dlg.Text = '使用说明（请先读一遍）'
+    $dlg.StartPosition = 'CenterParent'
+    $dlg.ClientSize = New-Object System.Drawing.Size(700, 600)
+    $dlg.MinimumSize = New-Object System.Drawing.Size(660, 520)
+    $dlg.FormBorderStyle = 'Sizable'
+    $dlg.MaximizeBox = $false
+    $dlg.MinimizeBox = $false
+    $dlg.ShowInTaskbar = $false
+    $dlg.Font = $fontUi
+    $dlg.BackColor = [System.Drawing.Color]::White
+
+    $lblTitle = New-Object System.Windows.Forms.Label
+    $lblTitle.Text = '使用说明（读完才能开始）'
+    $lblTitle.Bounds = New-Object System.Drawing.Rectangle(16, 12, 668, 30)
+    $lblTitle.Anchor = 'Top,Left,Right'
+    $lblTitle.Font = New-Object System.Drawing.Font($fontUi.FontFamily, 14, [System.Drawing.FontStyle]::Bold)
+    $lblTitle.ForeColor = [System.Drawing.Color]::FromArgb(0, 90, 158)
+    $dlg.Controls.Add($lblTitle)
+
+    $txtIntro = New-Object System.Windows.Forms.TextBox
+    $txtIntro.Bounds = New-Object System.Drawing.Rectangle(16, 48, 668, 486)
+    $txtIntro.Anchor = 'Top,Bottom,Left,Right'
+    $txtIntro.Multiline = $true
+    $txtIntro.ReadOnly = $true
+    $txtIntro.ScrollBars = 'Vertical'
+    $txtIntro.WordWrap = $true
+    $txtIntro.BackColor = [System.Drawing.Color]::FromArgb(252, 252, 252)
+    $txtIntro.Text = (Get-IntroBodyText)
+    $dlg.Controls.Add($txtIntro)
+
+    $lblHint = New-Object System.Windows.Forms.Label
+    $lblHint.Text = ''
+    $lblHint.Bounds = New-Object System.Drawing.Rectangle(16, 554, 470, 24)
+    $lblHint.Anchor = 'Bottom,Left,Right'
+    $lblHint.ForeColor = [System.Drawing.Color]::DimGray
+    $dlg.Controls.Add($lblHint)
+
+    $btnOk = New-Object System.Windows.Forms.Button
+    $btnOk.Text = '开始使用'
+    $btnOk.Bounds = New-Object System.Drawing.Rectangle(500, 546, 184, 40)
+    $btnOk.Anchor = 'Bottom,Right'
+    $btnOk.Enabled = $false
+    $dlg.Controls.Add($btnOk)
+
+    $script:IntroOk = $btnOk
+    $script:IntroHint = $lblHint
+    return $dlg
+}
+
+function Set-IntroGate {
+    param([int]$SecondsLeft)
+    $script:IntroLeft = $SecondsLeft
+    if ($null -eq $script:IntroHint -or $null -eq $script:IntroOk) { return }
+    $script:IntroHint.Text = Get-IntroGateText $SecondsLeft
+    if ($SecondsLeft -gt 0) {
+        $script:IntroOk.Enabled = $false
+        $script:IntroOk.Text = '开始使用'
+    } else {
+        $script:IntroOk.Enabled = $true
+        $script:IntroOk.Text = '我知道了，开始使用'
+    }
+}
+
+function Show-IntroPage {
+    if ($script:IntroSeconds -le 0) { return }
+    $dlg = New-IntroForm
+    $script:IntroDlg = $dlg
+
+    $script:IntroOk.add_Click({
+            if ($script:IntroLeft -le 0 -and $null -ne $script:IntroDlg) { $script:IntroDlg.Close() }
+        })
+
+    $dlg.add_FormClosing({
+            param($sender, $e)
+            if ($script:IntroLeft -gt 0) {
+                $e.Cancel = $true
+                if ($null -ne $script:IntroHint) {
+                    $script:IntroHint.Text = ('还没到时间：还需等待 {0} 秒（故意不让关，读完再关）' -f $script:IntroLeft)
+                }
+            }
+        })
+
+    $timer = New-Object System.Windows.Forms.Timer
+    $timer.Interval = 1000
+    $timer.add_Tick({
+            $left = $script:IntroLeft - 1
+            if ($left -lt 0) { $left = 0 }
+            Set-IntroGate $left
+            if ($left -le 0) {
+                try { $script:IntroTimer.Stop() } catch { }
+            }
+        })
+    $script:IntroTimer = $timer
+
+    Set-IntroGate $script:IntroSeconds
+    $timer.Start()
+    $script:IntroDlg.Focus()
+    [void]$dlg.ShowDialog($form)
+
+    try { $timer.Stop() } catch { }
+    try { $timer.Dispose() } catch { }
+    try { $dlg.Dispose() } catch { }
+    $script:IntroDlg = $null
+    $script:IntroOk = $null
+    $script:IntroHint = $null
+    $script:IntroTimer = $null
+    $script:IntroLeft = 0
+    Append-Log "`r`n已阅读使用说明，可以开始使用了。`r`n"
+}
+
 # ----------------------------------------------------------------------------- wiring
 
 $script:Timer = New-Object System.Windows.Forms.Timer
@@ -900,6 +1066,7 @@ $form.add_Shown({
             }
             Set-Busy $false
             Set-Status '准备就绪：点「① 扫描」开始。'
+            if (-not $SmokeTest -and $script:IntroSeconds -gt 0) { Show-IntroPage }
         }
     })
 
@@ -957,6 +1124,26 @@ if ($SmokeTest) {
     $logOneLine = ($txtLog.Text -replace "`r", ' / ' -replace "`n", ' / ')
     if ($logOneLine.Length -gt 400) { $logOneLine = $logOneLine.Substring(0, 400) + '...' }
     $lines.Add('log text       ' + $logOneLine)
+
+    # The intro page must exist, must start gated, and must open up at zero.
+    $lines.Add('')
+    $lines.Add('intro seconds  ' + $script:IntroSeconds)
+    $intro = New-IntroForm
+    $intro.CreateControl()
+    $lines.Add('intro controls ' + $intro.Controls.Count)
+    Set-IntroGate $script:IntroSeconds
+    $lines.Add('gate@N         left=' + $script:IntroLeft + ' okEnabled=' + $script:IntroOk.Enabled + ' okText="' + $script:IntroOk.Text + '"')
+    $lines.Add('hint@N         ' + $script:IntroHint.Text)
+    Set-IntroGate 0
+    $lines.Add('gate@0         left=' + $script:IntroLeft + ' okEnabled=' + $script:IntroOk.Enabled + ' okText="' + $script:IntroOk.Text + '"')
+    $lines.Add('hint@0         ' + $script:IntroHint.Text)
+    $body = $intro.Controls | Where-Object { $_.GetType().Name -eq 'TextBox' } | Select-Object -First 1
+    $lines.Add('intro body len ' + $body.Text.Length)
+    $lines.Add('body checks    只做两件事=' + [bool]($body.Text -like '*只做两件事*') + ' 还原=' + [bool]($body.Text -like '*还原上次清理*') + ' 不删除=' + [bool]($body.Text -like '*不是删除*') + ' 秒数=' + [bool]($body.Text -like ('*' + $script:IntroSeconds + ' 秒*')))
+    $intro.Dispose()
+    $script:IntroOk = $null
+    $script:IntroHint = $null
+    $script:IntroLeft = 0
     $form.Close()
 
     Set-Content -LiteralPath $outPath -Value ($lines -join "`r`n") -Encoding UTF8

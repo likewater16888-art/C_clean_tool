@@ -350,7 +350,7 @@ C 盘可用 22.45 GB / 146.48 GB   [进度条]        权限：普通用户（�
 |---|---|
 | `tools\Build-Dist.ps1` | 把 skill 里的引擎**复制快照**进 `dist\CDriveGuard\engine\`，统一转成 UTF-8 BOM，写 `VERSION.txt` + `SHA256.txt`，`-Zip` 直接出压缩包 |
 | `dist\CDriveGuard\` | 可分发的文件夹：`Start.cmd` / `CDriveGuard.ps1` / `README.txt` / `SHA256.txt` / `VERSION.txt` / `engine\` |
-| `dist\CDriveGuard-v1.0.0.zip` | 发给朋友的成品（27.7 KB，解压即用） |
+| `dist\CDriveGuard-v1.1.0.zip` | 发给朋友的成品（解压即用） |
 
 ```powershell
 # 改完引擎或界面后，一条命令重出包（含校验和）
@@ -391,6 +391,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\Build-Dist.ps1 -Zip
 | 语法（AST） | `CDriveGuard.ps1` / `Build-Dist.ps1` / `Invoke-SafeClean.ps1` 全部 `errors=0` |
 | 编码 | 所有 `.ps1` / `.txt` 带 UTF-8 BOM；`Start.cmd` **不带 BOM**（cmd 会把 BOM 当字符打印） |
 | 窗口自检（真实 Show + Shown 事件） | 24 个控件、C 盘状态条、权限标签、日志均正常，退出码 0 |
+| 开屏使用说明页强制 10 秒 | 启动即弹出模态页；倒计时中 `Close()` 被拒并提示"还需等待 N 秒"；归零后按钮可点；点后主窗口 `scanEnabled=True`、日志记"已阅读使用说明" |
 | 真实点按「① 扫描」 | 子进程 → `plan.json` → 表格出现 `User TEMP / 30 个 / 465 KB`，按钮变成「② 开始清理 465 KB」 |
 | 真实点按「② 开始清理」 | 进度 0→100、状态"清理完成：释放 465 KB"、还原按钮自动启用、隔离区 30 个文件、层级完整 |
 | 引擎沙箱端到端（清理→隔离→还原） | 30/30 搬走、fresh 文件保留、还原后 30/30 回原位、隔离区清空 |
@@ -410,4 +411,21 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\Build-Dist.ps1 -Zip
 - ❌ 清系统目录 / WinSxS / 回收站
 - ❌ ps2exe 打包 exe（会被杀软加壳误报）
 - ❌ 自动上传日志或统计
+
+### 8. 开屏使用说明页（v1.1.0 新增）
+
+每次启动，主窗口后面一出现就弹出**模态**的「使用说明」页，**10 秒内关不掉**（点右上角 × /
+Esc / Alt+F4 全被 `FormClosing` 拦下，并提示"还需等待 N 秒"），倒计时归零后按钮从灰色
+「开始使用」变成可点的「我知道了，开始使用」，主窗口才开始接受操作。
+
+- 为什么要"强制"：收工具的人不会读 README，但一定会看这个弹窗；10 秒刚好读完"只移动不删除 /
+  三步用法 / 怎么还原 / 绝不碰什么"。
+- 计时依靠 WinForms `Timer`（1 s）+ 脚本级 `$script:IntroLeft`，纯 GUI 侧逻辑，**不改引擎**。
+- 自检不再"建了就算"：`-SmokeTest` 会把说明页也建出来，打印 `gate@N` / `gate@0` 两组状态
+  （`left`、按钮是否可点、按钮文字、提示语），并检查正文含"只做两件事 / 还原上次清理 / 不是删除"。
+- 真实交互验证（探针注入，`-IntroSeconds 3` 压缩等待）：1 s 时尝试 `Close()` → 弹窗仍在、
+  提示变"还需等待 3 秒"；倒计时归零 → 按钮可点；点按钮 → 说明页关闭、主窗口
+  `scanEnabled=True / gridEnabled=True`、日志出现"已阅读使用说明"。
+- 参数 `-IntroSeconds <n>` 标了 `[Parameter(DontShow)]`，只用于自动化（`0` 关闭开屏），
+  不写进给用户的 README。
 
