@@ -1,0 +1,14 @@
+# Machine-specific run artifacts: audit/clean logs, quarantine manifests (one is 32 MB),
+# and everything under reports\ is regenerated locally. Keep them out of the repo.
+reports/
+
+# Scratch / build scratch
+work/
+*.tmp
+*.log
+
+# Editor / OS noise
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

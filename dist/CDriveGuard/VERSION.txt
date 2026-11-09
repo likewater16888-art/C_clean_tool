@@ -1,0 +1,4 @@
+﻿CDriveGuard 1.0.0
+built 2026-11-09 23:51:07
+engine from C:\Users\deepvision\.cline\skills\win11-storage-governance\scripts
+powershell required: 5.1 (Windows PowerShell, built in)
